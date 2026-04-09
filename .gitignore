@@ -1,0 +1,12 @@
+.venv/
+.playwright-browsers/
+output/
+playwright-profile/
+chrome-automation-user-data/
+config.json
+userscript_release_config.json
+__pycache__/
+.DS_Store
+*.pyc
+*.zip
+mercari_notifications.csv
