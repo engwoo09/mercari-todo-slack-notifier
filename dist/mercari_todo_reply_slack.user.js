@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.4
+// @version      0.3.5
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -398,6 +398,21 @@
     return lines.join('\n');
   }
 
+  function formatPlannedNotificationsMessage(scanStats, planStats) {
+    const lines = [
+      'Mercari reply alert batch',
+      `- 전송예정: ${planStats.pending}건`,
+      `- 기존이력제외: ${planStats.alreadySeen}건`,
+      `- 템플릿제외: ${planStats.excludedByTemplate}건`,
+    ];
+    if (planStats.templateCheckErrors) {
+      lines.push(`- 거래화면확인실패: ${planStats.templateCheckErrors}건`);
+    }
+    lines.push(`- 최근1개월대상: ${scanStats.itemCount}건`);
+    lines.push(`- 페이지: ${location.href}`);
+    return lines.join('\n');
+  }
+
   function shouldRetryShallowScan(scanStats) {
     if (scanStats.loadMoreClicks > 0) {
       return false;
@@ -647,6 +662,8 @@
         return;
       }
 
+      const pendingItems = [];
+
       for (const item of items) {
         const hash = buildItemHash(item);
         if (seenHashes.has(hash)) {
@@ -677,8 +694,23 @@
           continue;
         }
 
-        await sendSlackMessage(formatSlackMessage(item));
-        seenHashes.add(hash);
+        pendingItems.push({ item, hash });
+      }
+
+      if (pendingItems.length > 0) {
+        await sendSlackMessage(
+          formatPlannedNotificationsMessage(scanStats, {
+            pending: pendingItems.length,
+            alreadySeen: alreadySeenCount,
+            excludedByTemplate: excludedByTemplateCount,
+            templateCheckErrors: templateCheckErrorCount,
+          })
+        );
+      }
+
+      for (const pendingItem of pendingItems) {
+        await sendSlackMessage(formatSlackMessage(pendingItem.item));
+        seenHashes.add(pendingItem.hash);
         newCount += 1;
       }
 

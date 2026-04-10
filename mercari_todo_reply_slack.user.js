@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.5
+// @version      0.3.6
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -31,6 +31,7 @@
     scanIntervalMs: 10 * 60 * 1000,
     shallowScanRetryMs: 30 * 1000,
     shallowScanNodeThreshold: 300,
+    foregroundResumeCooldownMs: 15 * 1000,
     maxLoadMoreClicks: 10,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 30,
@@ -55,6 +56,8 @@
   let isScanning = false;
   let lastPathname = location.pathname;
   let scanTimerId = null;
+  let lastScanStartedAt = 0;
+  let lastForegroundResumeScanAt = 0;
   const pageTextCache = new Map();
 
   function getConfig(key, fallback) {
@@ -570,6 +573,7 @@
     }
 
     isScanning = true;
+    lastScanStartedAt = getNow();
     try {
       const loadMoreClicks = await clickLoadMore();
       const { items, stats } = collectMatchingItems();
@@ -825,9 +829,45 @@
     });
   }
 
+  function maybeRunForegroundResumeScan(trigger) {
+    if (!isTodoPage() || isScanning) {
+      return;
+    }
+
+    const now = getNow();
+    if (now - lastForegroundResumeScanAt < DEFAULTS.foregroundResumeCooldownMs) {
+      return;
+    }
+
+    lastForegroundResumeScanAt = now;
+    debugLog('Foreground resume scan triggered', {
+      trigger,
+      msSinceLastScanStart: lastScanStartedAt ? now - lastScanStartedAt : null,
+      documentHidden: document.hidden,
+    });
+    scanAndNotify({ reason: `foreground-resume-${trigger}`, shouldScheduleNext: true });
+  }
+
+  function watchForegroundResume() {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        maybeRunForegroundResumeScan('visibilitychange');
+      }
+    });
+
+    window.addEventListener('focus', () => {
+      maybeRunForegroundResumeScan('focus');
+    });
+
+    window.addEventListener('pageshow', () => {
+      maybeRunForegroundResumeScan('pageshow');
+    });
+  }
+
   function bootstrap() {
     registerMenuCommands();
     watchRouteChanges();
+    watchForegroundResume();
     scanAndNotify({ reason: 'bootstrap', shouldScheduleNext: true });
   }
 
