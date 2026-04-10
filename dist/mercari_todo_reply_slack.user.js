@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.2
+// @version      0.3.3
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -380,6 +380,9 @@
       `- 기존이력제외: ${sentStats.alreadySeen}`,
       `- 템플릿제외: ${sentStats.excludedByTemplate}`,
     ];
+    if (sentStats.templateCheckErrors) {
+      lines.push(`- 거래화면확인실패: ${sentStats.templateCheckErrors}`);
+    }
     if (meta.nextScanInMinutes) {
       lines.push(`- 다음스캔: 약 ${meta.nextScanInMinutes}분 후`);
     }
@@ -544,6 +547,7 @@
       let newCount = 0;
       let alreadySeenCount = 0;
       let excludedByTemplateCount = 0;
+      let templateCheckErrorCount = 0;
 
       const scanStats = {
         loadMoreClicks,
@@ -573,6 +577,7 @@
               sent: 0,
               alreadySeen: 0,
               excludedByTemplate: 0,
+              templateCheckErrors: 0,
             },
             {
               reason: `${reason}-baseline`,
@@ -592,6 +597,7 @@
               sent: 0,
               alreadySeen: 0,
               excludedByTemplate: 0,
+              templateCheckErrors: 0,
             },
             {
               reason,
@@ -610,7 +616,18 @@
           continue;
         }
 
-        const excludedMatch = await getExcludedTemplateMatch(item);
+        let excludedMatch = null;
+        try {
+          excludedMatch = await getExcludedTemplateMatch(item);
+        } catch (error) {
+          templateCheckErrorCount += 1;
+          debugLog('Template check failed, sending alert without exclusion', {
+            href: item.href,
+            timeText: item.timeText,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
         if (excludedMatch) {
           seenHashes.add(hash);
           excludedByTemplateCount += 1;
@@ -632,6 +649,7 @@
         sent: newCount,
         alreadySeen: alreadySeenCount,
         excludedByTemplate: excludedByTemplateCount,
+        templateCheckErrors: templateCheckErrorCount,
         trackedHashes: seenHashes.size,
       };
       debugLog('Slack notifications sent', sentStats);
