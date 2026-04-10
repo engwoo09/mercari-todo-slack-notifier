@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.1
+// @version      0.3.2
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -103,6 +103,10 @@
 
   function normalizeText(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function normalizeCompactText(value) {
+    return normalizeText(value).replace(/[\s\u3000]/g, '');
   }
 
   function isTodoPage() {
@@ -467,9 +471,12 @@
       return null;
     }
 
+    const compactPageText = normalizeCompactText(pageText);
+
     for (const rule of EXCLUDED_MESSAGE_RULES) {
       const normalizedTemplate = normalizeText(rule.text);
-      if (normalizedTemplate && pageText.includes(normalizedTemplate)) {
+      const compactTemplate = normalizeCompactText(rule.text);
+      if (compactTemplate && compactPageText.includes(compactTemplate)) {
         return {
           key: rule.key,
           matchedText: normalizedTemplate,
