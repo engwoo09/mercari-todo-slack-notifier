@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.2.0
+// @version      0.3.0
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -28,7 +28,7 @@
 
   const DEFAULTS = {
     keyword: '返信をお願いします',
-    scanIntervalMs: 30000,
+    scanIntervalMs: 10 * 60 * 1000,
     maxLoadMoreClicks: 10,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 30,
@@ -37,13 +37,22 @@
     iframeWaitMs: 2500,
   };
 
-  const EXCLUDED_MESSAGE_PHRASES = [
-    'ご購入いただきありがとうございます。これから発送の準備をさせていただきます。設定した期日内に発送予定ですので今しばらくお待ちください。取引終了までよろしくお願いいたします。',
-    '商品を発送いたしました。到着まで今しばらくお待ちください。商品が届きましたらご確認後に受け取り評価をお願いいたします。',
+  const EXCLUDED_MESSAGE_RULES = [
+    [
+      'ご購入いただきありがとうございます',
+      '発送の準備をさせていただきます',
+      '取引終了までよろしくお願いいたします',
+    ],
+    [
+      '商品を発送いたしました',
+      '到着まで今しばらくお待ちください',
+      '受け取り評価をお願いいたします',
+    ],
   ];
 
   let isScanning = false;
   let lastPathname = location.pathname;
+  let scanTimerId = null;
   const pageTextCache = new Map();
 
   function getConfig(key, fallback) {
@@ -354,6 +363,29 @@
     return lines.join('\n');
   }
 
+  function formatScanCompletedMessage(scanStats, sentStats, meta = {}) {
+    const lines = [
+      'Mercari scan completed',
+      `- 이유: ${meta.reason || 'scheduled'}`,
+      `- 후보노드: ${scanStats.scannedNodes}`,
+      `- 키워드일치: ${scanStats.keywordMatchedNodes}`,
+      `- 최근1개월대상: ${scanStats.itemCount}`,
+      `- 1개월초과제외: ${scanStats.tooOld}`,
+      `- 중복행제외: ${scanStats.duplicateRows}`,
+      `- 전송완료: ${sentStats.sent}`,
+      `- 기존이력제외: ${sentStats.alreadySeen}`,
+      `- 템플릿제외: ${sentStats.excludedByTemplate}`,
+    ];
+    if (meta.nextScanInMinutes) {
+      lines.push(`- 다음스캔: 약 ${meta.nextScanInMinutes}분 후`);
+    }
+    if (meta.reloading) {
+      lines.push('- 후속동작: 페이지 새로고침 예정');
+    }
+    lines.push(`- 페이지: ${location.href}`);
+    return lines.join('\n');
+  }
+
   function formatBulkReloadMessage(items) {
     const preview = items
       .slice(0, 3)
@@ -435,7 +467,7 @@
       return false;
     }
 
-    return EXCLUDED_MESSAGE_PHRASES.some((phrase) => pageText.includes(phrase));
+    return EXCLUDED_MESSAGE_RULES.some((rule) => rule.every((phrase) => pageText.includes(phrase)));
   }
 
   async function maybeReloadOnBulkItems(items) {
@@ -457,7 +489,26 @@
     return true;
   }
 
-  async function scanAndNotify() {
+  function scheduleNextScan(delayMs = DEFAULTS.scanIntervalMs) {
+    if (scanTimerId) {
+      window.clearTimeout(scanTimerId);
+    }
+    scanTimerId = window.setTimeout(() => {
+      scanTimerId = null;
+      scanAndNotify({ reason: 'scheduled', shouldScheduleNext: true });
+    }, delayMs);
+    debugJson('Next scan scheduled', {
+      delayMs,
+      nextScanInMinutes: Math.round((delayMs / 60000) * 10) / 10,
+    });
+  }
+
+  async function scanAndNotify(options = {}) {
+    const {
+      reason = 'manual',
+      shouldScheduleNext = false,
+    } = options;
+
     if (!isTodoPage() || isScanning) {
       return;
     }
@@ -498,11 +549,40 @@
         saveSeenHashes(seenHashes);
         markBaselineInitialized();
         debugLog('Baseline initialized without sending Slack', { itemCount: items.length });
+        await sendSlackMessage(
+          formatScanCompletedMessage(
+            scanStats,
+            {
+              sent: 0,
+              alreadySeen: 0,
+              excludedByTemplate: 0,
+            },
+            {
+              reason: `${reason}-baseline`,
+              nextScanInMinutes: shouldScheduleNext ? Math.round((DEFAULTS.scanIntervalMs / 60000) * 10) / 10 : 0,
+            }
+          )
+        );
         return;
       }
 
       const reloaded = await maybeReloadOnBulkItems(items);
       if (reloaded) {
+        await sendSlackMessage(
+          formatScanCompletedMessage(
+            scanStats,
+            {
+              sent: 0,
+              alreadySeen: 0,
+              excludedByTemplate: 0,
+            },
+            {
+              reason,
+              nextScanInMinutes: shouldScheduleNext ? Math.round((DEFAULTS.scanIntervalMs / 60000) * 10) / 10 : 0,
+              reloading: true,
+            }
+          )
+        );
         return;
       }
 
@@ -535,10 +615,23 @@
       };
       debugLog('Slack notifications sent', sentStats);
       debugJson('Slack notifications sent summary', sentStats);
+      await sendSlackMessage(
+        formatScanCompletedMessage(
+          scanStats,
+          sentStats,
+          {
+            reason,
+            nextScanInMinutes: shouldScheduleNext ? Math.round((DEFAULTS.scanIntervalMs / 60000) * 10) / 10 : 0,
+          }
+        )
+      );
     } catch (error) {
       console.error('[MercariTodoSlack] Scan failed:', error);
     } finally {
       isScanning = false;
+      if (shouldScheduleNext && isTodoPage()) {
+        scheduleNextScan(DEFAULTS.scanIntervalMs);
+      }
     }
   }
 
@@ -588,7 +681,7 @@
     });
 
     GM_registerMenuCommand('Use Current List As Baseline', () => {
-      const items = collectMatchingItems();
+      const { items } = collectMatchingItems();
       const seenHashes = getSeenHashes();
       for (const item of items) {
         seenHashes.add(buildItemHash(item));
@@ -599,7 +692,7 @@
     });
 
     GM_registerMenuCommand('Run Scan Now', () => {
-      scanAndNotify();
+      scanAndNotify({ reason: 'manual', shouldScheduleNext: false });
     });
   }
 
@@ -608,7 +701,7 @@
       if (location.pathname !== lastPathname) {
         lastPathname = location.pathname;
         debugLog('Route changed', lastPathname);
-        scanAndNotify();
+        scanAndNotify({ reason: 'route-change', shouldScheduleNext: false });
       }
     });
 
@@ -621,8 +714,7 @@
   function bootstrap() {
     registerMenuCommands();
     watchRouteChanges();
-    scanAndNotify();
-    window.setInterval(scanAndNotify, DEFAULTS.scanIntervalMs);
+    scanAndNotify({ reason: 'bootstrap', shouldScheduleNext: true });
   }
 
   bootstrap();
