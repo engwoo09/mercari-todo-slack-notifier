@@ -194,13 +194,50 @@
     return parseRelativeTimeText(timeText).eligible;
   }
 
+  function getCandidateRoots() {
+    const roots = [
+      document.querySelector('main'),
+      document.querySelector('[role="main"]'),
+      document.querySelector('#__next'),
+      document.body,
+    ].filter(Boolean);
+
+    return Array.from(new Set(roots));
+  }
+
+  function getCandidateNodes() {
+    const selector = [
+      'a[href]',
+      'li',
+      'article',
+      '[data-testid]',
+      'section > div',
+      'div',
+    ].join(', ');
+
+    const seen = new Set();
+    const nodes = [];
+
+    for (const root of getCandidateRoots()) {
+      const found = [root, ...Array.from(root.querySelectorAll(selector))];
+      for (const node of found) {
+        if (!(node instanceof Element)) {
+          continue;
+        }
+        if (seen.has(node)) {
+          continue;
+        }
+        seen.add(node);
+        nodes.push(node);
+      }
+    }
+
+    return nodes;
+  }
+
   function collectMatchingItems() {
     const keyword = getKeyword();
-    const selectors = [
-      'main a[href]',
-      '[role="main"] a[href]',
-    ];
-    const nodes = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+    const nodes = getCandidateNodes();
     const seen = new Set();
     const results = [];
     const stats = {
@@ -213,6 +250,9 @@
 
     for (const node of nodes) {
       const text = normalizeText(node.innerText || node.textContent);
+      if (!text || text.length > 500) {
+        continue;
+      }
       if (!text.includes(keyword)) {
         continue;
       }
