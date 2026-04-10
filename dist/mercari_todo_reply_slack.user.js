@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.3
+// @version      0.3.4
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -29,6 +29,8 @@
   const DEFAULTS = {
     keyword: '返信をお願いします',
     scanIntervalMs: 10 * 60 * 1000,
+    shallowScanRetryMs: 30 * 1000,
+    shallowScanNodeThreshold: 300,
     maxLoadMoreClicks: 10,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 30,
@@ -389,8 +391,21 @@
     if (meta.reloading) {
       lines.push('- 후속동작: 페이지 새로고침 예정');
     }
+    if (meta.shallowRetryInSeconds) {
+      lines.push(`- 후속동작: 목록 재확인 ${meta.shallowRetryInSeconds}초 후`);
+    }
     lines.push(`- 페이지: ${location.href}`);
     return lines.join('\n');
+  }
+
+  function shouldRetryShallowScan(scanStats) {
+    if (scanStats.loadMoreClicks > 0) {
+      return false;
+    }
+    if (scanStats.itemCount > 0 || scanStats.keywordMatchedNodes > 0) {
+      return false;
+    }
+    return scanStats.scannedNodes < DEFAULTS.shallowScanNodeThreshold;
   }
 
   function formatBulkReloadMessage(items) {
@@ -563,6 +578,29 @@
       debugLog('Todo scan results', scanStats);
       debugJson('Todo scan results summary', scanStats);
 
+      if (shouldRetryShallowScan(scanStats)) {
+        debugLog('Shallow scan detected, retrying soon', scanStats);
+        if (shouldScheduleNext && isTodoPage()) {
+          scheduleNextScan(DEFAULTS.shallowScanRetryMs);
+        }
+        await sendSlackMessage(
+          formatScanCompletedMessage(
+            scanStats,
+            {
+              sent: 0,
+              alreadySeen: 0,
+              excludedByTemplate: 0,
+              templateCheckErrors: 0,
+            },
+            {
+              reason: `${reason}-shallow-retry`,
+              shallowRetryInSeconds: Math.round(DEFAULTS.shallowScanRetryMs / 1000),
+            }
+          )
+        );
+        return;
+      }
+
       if (!hasInitializedBaseline()) {
         for (const item of items) {
           seenHashes.add(buildItemHash(item));
@@ -668,7 +706,7 @@
       console.error('[MercariTodoSlack] Scan failed:', error);
     } finally {
       isScanning = false;
-      if (shouldScheduleNext && isTodoPage()) {
+      if (shouldScheduleNext && isTodoPage() && !scanTimerId) {
         scheduleNextScan(DEFAULTS.scanIntervalMs);
       }
     }
