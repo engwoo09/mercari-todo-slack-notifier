@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.0
+// @version      0.3.1
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -38,16 +38,16 @@
   };
 
   const EXCLUDED_MESSAGE_RULES = [
-    [
-      'ご購入いただきありがとうございます',
-      '発送の準備をさせていただきます',
-      '取引終了までよろしくお願いいたします',
-    ],
-    [
-      '商品を発送いたしました',
-      '到着まで今しばらくお待ちください',
-      '受け取り評価をお願いいたします',
-    ],
+    {
+      key: 'purchase-greeting',
+      text:
+        'ご購入いただきありがとうございます。これから発送の準備をさせていただきます。設定した期日内に発送予定ですので今しばらくお待ちください。取引終了までよろしくお願いいたします。',
+    },
+    {
+      key: 'shipping-notice',
+      text:
+        '商品を発送いたしました。到着まで今しばらくお待ちください。商品が届きましたらご確認後に受け取り評価をお願いいたします。',
+    },
   ];
 
   let isScanning = false;
@@ -457,17 +457,27 @@
     return text;
   }
 
-  async function shouldExcludeByTransactionMessage(item) {
+  async function getExcludedTemplateMatch(item) {
     if (!item.href) {
-      return false;
+      return null;
     }
 
     const pageText = await getTransactionPageText(item.href);
     if (!pageText) {
-      return false;
+      return null;
     }
 
-    return EXCLUDED_MESSAGE_RULES.some((rule) => rule.every((phrase) => pageText.includes(phrase)));
+    for (const rule of EXCLUDED_MESSAGE_RULES) {
+      const normalizedTemplate = normalizeText(rule.text);
+      if (normalizedTemplate && pageText.includes(normalizedTemplate)) {
+        return {
+          key: rule.key,
+          matchedText: normalizedTemplate,
+        };
+      }
+    }
+
+    return null;
   }
 
   async function maybeReloadOnBulkItems(items) {
@@ -593,11 +603,15 @@
           continue;
         }
 
-        const excluded = await shouldExcludeByTransactionMessage(item);
-        if (excluded) {
+        const excludedMatch = await getExcludedTemplateMatch(item);
+        if (excludedMatch) {
           seenHashes.add(hash);
           excludedByTemplateCount += 1;
-          debugLog('Skipped template transaction message', { href: item.href, timeText: item.timeText });
+          debugLog('Skipped template transaction message', {
+            href: item.href,
+            timeText: item.timeText,
+            templateKey: excludedMatch.key,
+          });
           continue;
         }
 
@@ -678,6 +692,11 @@
       setConfig(CONFIG_KEYS.baselineInitialized, false);
       setConfig(CONFIG_KEYS.bulkAlertLastSentAt, 0);
       window.alert('전송 이력 초기화 완료');
+    });
+
+    GM_registerMenuCommand('Clear Seen Hashes Keep Baseline', () => {
+      setConfig(CONFIG_KEYS.seenHashes, []);
+      window.alert('기준선은 유지하고 전송 이력만 비웠습니다. 현재 목록도 다시 검사 대상이 됩니다.');
     });
 
     GM_registerMenuCommand('Use Current List As Baseline', () => {
