@@ -82,6 +82,12 @@
     }
   }
 
+  function debugJson(label, payload) {
+    if (debugEnabled()) {
+      console.log(`[MercariTodoSlack] ${label} ${JSON.stringify(payload)}`);
+    }
+  }
+
   function getNow() {
     return Date.now();
   }
@@ -471,7 +477,7 @@
       let alreadySeenCount = 0;
       let excludedByTemplateCount = 0;
 
-      debugLog('Todo scan results', {
+      const scanStats = {
         loadMoreClicks,
         itemCount: items.length,
         scannedNodes: stats.scannedNodes,
@@ -481,7 +487,9 @@
         duplicateRows: stats.duplicateRows,
         baselineInitialized: hasInitializedBaseline(),
         seenHashes: seenHashes.size,
-      });
+      };
+      debugLog('Todo scan results', scanStats);
+      debugJson('Todo scan results summary', scanStats);
 
       if (!hasInitializedBaseline()) {
         for (const item of items) {
@@ -519,12 +527,14 @@
       }
 
       saveSeenHashes(seenHashes);
-      debugLog('Slack notifications sent', {
+      const sentStats = {
         sent: newCount,
         alreadySeen: alreadySeenCount,
         excludedByTemplate: excludedByTemplateCount,
         trackedHashes: seenHashes.size,
-      });
+      };
+      debugLog('Slack notifications sent', sentStats);
+      debugJson('Slack notifications sent summary', sentStats);
     } catch (error) {
       console.error('[MercariTodoSlack] Scan failed:', error);
     } finally {
