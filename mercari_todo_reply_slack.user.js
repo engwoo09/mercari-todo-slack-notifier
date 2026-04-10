@@ -203,24 +203,35 @@
     const nodes = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
     const seen = new Set();
     const results = [];
+    const stats = {
+      scannedNodes: nodes.length,
+      keywordMatchedNodes: 0,
+      missingTimeText: 0,
+      tooOld: 0,
+      duplicateRows: 0,
+    };
 
     for (const node of nodes) {
       const text = normalizeText(node.innerText || node.textContent);
       if (!text.includes(keyword)) {
         continue;
       }
+      stats.keywordMatchedNodes += 1;
 
       const href = canonicalizeHref(pickHref(node));
       const timeText = extractTimeText(node);
       if (!timeText) {
+        stats.missingTimeText += 1;
         continue;
       }
       if (!isRecentEnough(timeText)) {
+        stats.tooOld += 1;
         continue;
       }
 
       const key = href ? href : `${text}||${timeText}`;
       if (seen.has(key)) {
+        stats.duplicateRows += 1;
         continue;
       }
       seen.add(key);
@@ -232,7 +243,7 @@
       });
     }
 
-    return results;
+    return { items: results, stats };
   }
 
   function simpleHash(input) {
@@ -414,11 +425,23 @@
     isScanning = true;
     try {
       const loadMoreClicks = await clickLoadMore();
-      const items = collectMatchingItems();
+      const { items, stats } = collectMatchingItems();
       const seenHashes = getSeenHashes();
       let newCount = 0;
+      let alreadySeenCount = 0;
+      let excludedByTemplateCount = 0;
 
-      debugLog('Todo scan results', { loadMoreClicks, itemCount: items.length });
+      debugLog('Todo scan results', {
+        loadMoreClicks,
+        itemCount: items.length,
+        scannedNodes: stats.scannedNodes,
+        keywordMatchedNodes: stats.keywordMatchedNodes,
+        missingTimeText: stats.missingTimeText,
+        tooOld: stats.tooOld,
+        duplicateRows: stats.duplicateRows,
+        baselineInitialized: hasInitializedBaseline(),
+        seenHashes: seenHashes.size,
+      });
 
       if (!hasInitializedBaseline()) {
         for (const item of items) {
@@ -438,12 +461,14 @@
       for (const item of items) {
         const hash = buildItemHash(item);
         if (seenHashes.has(hash)) {
+          alreadySeenCount += 1;
           continue;
         }
 
         const excluded = await shouldExcludeByTransactionMessage(item);
         if (excluded) {
           seenHashes.add(hash);
+          excludedByTemplateCount += 1;
           debugLog('Skipped template transaction message', { href: item.href, timeText: item.timeText });
           continue;
         }
@@ -454,7 +479,12 @@
       }
 
       saveSeenHashes(seenHashes);
-      debugLog('Slack notifications sent', newCount);
+      debugLog('Slack notifications sent', {
+        sent: newCount,
+        alreadySeen: alreadySeenCount,
+        excludedByTemplate: excludedByTemplateCount,
+        trackedHashes: seenHashes.size,
+      });
     } catch (error) {
       console.error('[MercariTodoSlack] Scan failed:', error);
     } finally {
