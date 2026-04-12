@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.6
+// @version      0.3.7
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -32,9 +32,10 @@
     shallowScanRetryMs: 30 * 1000,
     shallowScanNodeThreshold: 300,
     foregroundResumeCooldownMs: 15 * 1000,
+    periodicRefreshMs: 11 * 60 * 1000,
     maxLoadMoreClicks: 10,
     waitAfterLoadMoreMs: 1200,
-    recentWindowDays: 30,
+    recentWindowDays: 3,
     bulkReloadThreshold: 10,
     bulkReloadCooldownMs: 10 * 60 * 1000,
     iframeWaitMs: 2500,
@@ -56,6 +57,7 @@
   let isScanning = false;
   let lastPathname = location.pathname;
   let scanTimerId = null;
+  let periodicRefreshTimerId = null;
   let lastScanStartedAt = 0;
   let lastForegroundResumeScanAt = 0;
   const pageTextCache = new Map();
@@ -556,6 +558,28 @@
     });
   }
 
+  function schedulePeriodicRefresh(delayMs = DEFAULTS.periodicRefreshMs) {
+    if (periodicRefreshTimerId) {
+      window.clearTimeout(periodicRefreshTimerId);
+    }
+    periodicRefreshTimerId = window.setTimeout(() => {
+      periodicRefreshTimerId = null;
+      if (!isTodoPage() || isScanning) {
+        schedulePeriodicRefresh(DEFAULTS.periodicRefreshMs);
+        return;
+      }
+      debugJson('Periodic refresh triggered', {
+        delayMs,
+        msSinceLastScanStart: lastScanStartedAt ? getNow() - lastScanStartedAt : null,
+      });
+      window.location.reload();
+    }, delayMs);
+    debugJson('Periodic refresh scheduled', {
+      delayMs,
+      nextRefreshInMinutes: Math.round((delayMs / 60000) * 10) / 10,
+    });
+  }
+
   async function scanAndNotify(options = {}) {
     const {
       reason = 'manual',
@@ -868,6 +892,7 @@
     registerMenuCommands();
     watchRouteChanges();
     watchForegroundResume();
+    schedulePeriodicRefresh();
     scanAndNotify({ reason: 'bootstrap', shouldScheduleNext: true });
   }
 
