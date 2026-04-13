@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.0
+// @version      0.4.1
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -37,7 +37,7 @@
     maxItemsPerScan: 30,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 3,
-    bulkReloadThreshold: 10,
+    bulkReloadThreshold: 40,
     bulkReloadCooldownMs: 10 * 60 * 1000,
     iframeWaitMs: 2500,
   };
@@ -326,7 +326,7 @@
     }
 
     return {
-      items: results.slice(0, DEFAULTS.maxItemsPerScan),
+      items: results,
       stats,
     };
   }
@@ -425,7 +425,8 @@
   function formatPlannedNotificationsMessage(scanStats, planStats) {
     const lines = [
       'Mercari reply alert batch',
-      `- 전송예정: ${planStats.pending}건`,
+      `- 필터통과누적: ${planStats.pending}건`,
+      `- 이번스캔전송: ${planStats.toSend}건`,
       `- 기존이력제외: ${planStats.alreadySeen}건`,
       `- 템플릿제외: ${planStats.excludedByTemplate}건`,
     ];
@@ -560,7 +561,6 @@
     await sendSlackMessage(formatBulkReloadMessage(items));
     setBulkAlertLastSentAt(now);
     debugLog('Bulk reload triggered', { itemCount: items.length });
-    window.setTimeout(() => window.location.reload(), 1500);
     return true;
   }
 
@@ -689,27 +689,6 @@
         return;
       }
 
-      const reloaded = await maybeReloadOnBulkItems(items);
-      if (reloaded) {
-        await sendSlackMessage(
-          formatScanCompletedMessage(
-            scanStats,
-            {
-              sent: 0,
-              alreadySeen: 0,
-              excludedByTemplate: 0,
-              templateCheckErrors: 0,
-            },
-            {
-              reason,
-              nextScanInMinutes: shouldScheduleNext ? Math.round((DEFAULTS.scanIntervalMs / 60000) * 10) / 10 : 0,
-              reloading: true,
-            }
-          )
-        );
-        return;
-      }
-
       const pendingItems = [];
 
       for (const item of items) {
@@ -745,10 +724,14 @@
         pendingItems.push({ item, hash });
       }
 
+      const shouldReloadAfterScan = await maybeReloadOnBulkItems(pendingItems.map((entry) => entry.item));
+      const itemsToSend = pendingItems.slice(0, DEFAULTS.maxItemsPerScan);
+
       if (pendingItems.length > 0) {
         await sendSlackMessage(
           formatPlannedNotificationsMessage(scanStats, {
             pending: pendingItems.length,
+            toSend: itemsToSend.length,
             alreadySeen: alreadySeenCount,
             excludedByTemplate: excludedByTemplateCount,
             templateCheckErrors: templateCheckErrorCount,
@@ -756,7 +739,7 @@
         );
       }
 
-      for (const pendingItem of pendingItems) {
+      for (const pendingItem of itemsToSend) {
         await sendSlackMessage(formatSlackMessage(pendingItem.item));
         seenHashes.add(pendingItem.hash);
         newCount += 1;
@@ -779,9 +762,13 @@
           {
             reason,
             nextScanInMinutes: shouldScheduleNext ? Math.round((DEFAULTS.scanIntervalMs / 60000) * 10) / 10 : 0,
+            reloading: shouldReloadAfterScan,
           }
         )
       );
+      if (shouldReloadAfterScan) {
+        window.setTimeout(() => window.location.reload(), 1500);
+      }
     } catch (error) {
       console.error('[MercariTodoSlack] Scan failed:', error);
     } finally {
