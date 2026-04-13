@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.2
+// @version      0.4.3
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -130,6 +130,26 @@
           .filter((part) => part.length >= 20)
       )
     );
+  }
+
+  function extractCandidateTextsFromDocument(doc) {
+    const candidates = new Set();
+    const selectors = ['p', 'span', 'div', 'li'];
+    for (const selector of selectors) {
+      for (const node of Array.from(doc.querySelectorAll(selector))) {
+        const text = normalizeText(node.textContent || '');
+        if (text.length >= 20 && text.length <= 220) {
+          candidates.add(text);
+        }
+      }
+    }
+
+    const bodyText = normalizeText(doc?.body?.innerText || doc?.body?.textContent || '');
+    for (const block of extractNormalizedTextBlocks(bodyText)) {
+      candidates.add(block);
+    }
+
+    return Array.from(candidates);
   }
 
   function isTodoPage() {
@@ -496,8 +516,12 @@
           await sleep(DEFAULTS.iframeWaitMs);
           const doc = iframe.contentDocument;
           const bodyText = normalizeText(doc?.body?.innerText || doc?.body?.textContent || '');
+          const candidateTexts = doc ? extractCandidateTextsFromDocument(doc) : [];
           cleanup();
-          resolve(bodyText);
+          resolve({
+            bodyText,
+            candidateTexts,
+          });
         } catch (error) {
           cleanup();
           reject(error);
@@ -518,9 +542,9 @@
       return pageTextCache.get(href);
     }
 
-    const text = await openHiddenIframe(href);
-    pageTextCache.set(href, text);
-    return text;
+    const pageContent = await openHiddenIframe(href);
+    pageTextCache.set(href, pageContent);
+    return pageContent;
   }
 
   async function getExcludedTemplateMatch(item) {
@@ -528,12 +552,12 @@
       return null;
     }
 
-    const pageText = await getTransactionPageText(item.href);
-    if (!pageText) {
+    const pageContent = await getTransactionPageText(item.href);
+    if (!pageContent) {
       return null;
     }
-    const normalizedBlocks = extractNormalizedTextBlocks(pageText);
-    const compactBlocks = new Set(normalizedBlocks.map((block) => normalizeCompactText(block)));
+    const candidateTexts = Array.isArray(pageContent.candidateTexts) ? pageContent.candidateTexts : [];
+    const compactBlocks = new Set(candidateTexts.map((block) => normalizeCompactText(block)));
 
     for (const rule of EXCLUDED_MESSAGE_RULES) {
       const normalizedTemplate = normalizeText(rule.text);

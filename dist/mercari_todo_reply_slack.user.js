@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.1
+// @version      0.4.2
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -37,7 +37,7 @@
     maxItemsPerScan: 30,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 3,
-    bulkReloadThreshold: 40,
+    bulkReloadThreshold: 20,
     bulkReloadCooldownMs: 10 * 60 * 1000,
     iframeWaitMs: 2500,
   };
@@ -418,6 +418,9 @@
     if (meta.shallowRetryInSeconds) {
       lines.push(`- 후속동작: 목록 재확인 ${meta.shallowRetryInSeconds}초 후`);
     }
+    if (meta.waitingForThreshold) {
+      lines.push(`- 후속동작: 필터통과 누적 ${DEFAULTS.bulkReloadThreshold}건 이상일 때까지 대기`);
+    }
     lines.push(`- 페이지: ${location.href}`);
     return lines.join('\n');
   }
@@ -726,8 +729,9 @@
 
       const shouldReloadAfterScan = await maybeReloadOnBulkItems(pendingItems.map((entry) => entry.item));
       const itemsToSend = pendingItems.slice(0, DEFAULTS.maxItemsPerScan);
+      const shouldSendAlerts = pendingItems.length >= DEFAULTS.bulkReloadThreshold;
 
-      if (pendingItems.length > 0) {
+      if (shouldSendAlerts) {
         await sendSlackMessage(
           formatPlannedNotificationsMessage(scanStats, {
             pending: pendingItems.length,
@@ -739,10 +743,12 @@
         );
       }
 
-      for (const pendingItem of itemsToSend) {
-        await sendSlackMessage(formatSlackMessage(pendingItem.item));
-        seenHashes.add(pendingItem.hash);
-        newCount += 1;
+      if (shouldSendAlerts) {
+        for (const pendingItem of itemsToSend) {
+          await sendSlackMessage(formatSlackMessage(pendingItem.item));
+          seenHashes.add(pendingItem.hash);
+          newCount += 1;
+        }
       }
 
       saveSeenHashes(seenHashes);
@@ -763,6 +769,7 @@
             reason,
             nextScanInMinutes: shouldScheduleNext ? Math.round((DEFAULTS.scanIntervalMs / 60000) * 10) / 10 : 0,
             reloading: shouldReloadAfterScan,
+            waitingForThreshold: !shouldSendAlerts,
           }
         )
       );
