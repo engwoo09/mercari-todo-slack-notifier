@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.7
+// @version      0.3.8
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -33,7 +33,8 @@
     shallowScanNodeThreshold: 300,
     foregroundResumeCooldownMs: 15 * 1000,
     periodicRefreshMs: 11 * 60 * 1000,
-    maxLoadMoreClicks: 10,
+    maxLoadMoreClicks: 4,
+    maxItemsPerScan: 25,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 3,
     bulkReloadThreshold: 10,
@@ -61,6 +62,10 @@
   let lastScanStartedAt = 0;
   let lastForegroundResumeScanAt = 0;
   const pageTextCache = new Map();
+
+  function clearPageTextCache() {
+    pageTextCache.clear();
+  }
 
   function getConfig(key, fallback) {
     const value = GM_getValue(key);
@@ -309,7 +314,10 @@
       });
     }
 
-    return { items: results, stats };
+    return {
+      items: results.slice(0, DEFAULTS.maxItemsPerScan),
+      stats,
+    };
   }
 
   function simpleHash(input) {
@@ -459,6 +467,7 @@
 
       const cleanup = () => {
         window.clearTimeout(timeoutId);
+        iframe.src = 'about:blank';
         iframe.remove();
       };
 
@@ -766,6 +775,7 @@
       console.error('[MercariTodoSlack] Scan failed:', error);
     } finally {
       isScanning = false;
+      clearPageTextCache();
       if (shouldScheduleNext && isTodoPage() && !scanTimerId) {
         scheduleNextScan(DEFAULTS.scanIntervalMs);
       }
@@ -842,6 +852,7 @@
     const observer = new MutationObserver(() => {
       if (location.pathname !== lastPathname) {
         lastPathname = location.pathname;
+        clearPageTextCache();
         debugLog('Route changed', lastPathname);
         scanAndNotify({ reason: 'route-change', shouldScheduleNext: false });
       }
