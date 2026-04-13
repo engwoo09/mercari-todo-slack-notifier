@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.8
+// @version      0.3.9
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -34,7 +34,7 @@
     foregroundResumeCooldownMs: 15 * 1000,
     periodicRefreshMs: 11 * 60 * 1000,
     maxLoadMoreClicks: 4,
-    maxItemsPerScan: 25,
+    maxItemsPerScan: 40,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 3,
     bulkReloadThreshold: 10,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.3.9
+// @version      0.4.0
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -34,7 +34,7 @@
     foregroundResumeCooldownMs: 15 * 1000,
     periodicRefreshMs: 11 * 60 * 1000,
     maxLoadMoreClicks: 4,
-    maxItemsPerScan: 40,
+    maxItemsPerScan: 30,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 3,
     bulkReloadThreshold: 10,
@@ -119,6 +119,17 @@
 
   function normalizeCompactText(value) {
     return normalizeText(value).replace(/[\s\u3000]/g, '');
+  }
+
+  function extractNormalizedTextBlocks(value) {
+    return Array.from(
+      new Set(
+        String(value || '')
+          .split(/\n{2,}/)
+          .map((part) => normalizeText(part))
+          .filter((part) => part.length >= 20)
+      )
+    );
   }
 
   function isTodoPage() {
@@ -517,13 +528,13 @@
     if (!pageText) {
       return null;
     }
-
-    const compactPageText = normalizeCompactText(pageText);
+    const normalizedBlocks = extractNormalizedTextBlocks(pageText);
+    const compactBlocks = new Set(normalizedBlocks.map((block) => normalizeCompactText(block)));
 
     for (const rule of EXCLUDED_MESSAGE_RULES) {
       const normalizedTemplate = normalizeText(rule.text);
       const compactTemplate = normalizeCompactText(rule.text);
-      if (compactTemplate && compactPageText.includes(compactTemplate)) {
+      if (compactTemplate && compactBlocks.has(compactTemplate)) {
         return {
           key: rule.key,
           matchedText: normalizedTemplate,
