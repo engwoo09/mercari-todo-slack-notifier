@@ -149,7 +149,7 @@
         messages.push(text);
       }
     }
-    return Array.from(new Set(messages));
+    return messages;
   }
 
   function extractCandidateTextsFromDocument(doc) {
@@ -635,13 +635,14 @@
       };
     }
     const candidateTexts = Array.isArray(pageContent.candidateTexts) ? pageContent.candidateTexts : [];
-    const compactBlocks = new Set(candidateTexts.map((block) => normalizeCompactText(block)));
+    const latestMessageText = candidateTexts.length > 0 ? normalizeText(candidateTexts[candidateTexts.length - 1]) : '';
+    const latestCompactText = normalizeCompactText(latestMessageText);
     let excludedMatch = null;
 
     for (const rule of EXCLUDED_MESSAGE_RULES) {
       const normalizedTemplate = normalizeText(rule.text);
       const compactTemplate = normalizeCompactText(rule.text);
-      if (compactTemplate && compactBlocks.has(compactTemplate)) {
+      if (compactTemplate && latestCompactText === compactTemplate) {
         excludedMatch = {
           key: rule.key,
           matchedText: normalizedTemplate,
@@ -652,7 +653,7 @@
 
     return {
       excludedMatch,
-      previewText: pickPreviewText(item, candidateTexts),
+      previewText: latestMessageText || pickPreviewText(item, candidateTexts),
     };
   }
 
