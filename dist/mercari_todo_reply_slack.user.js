@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.2
+// @version      0.4.4
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -130,6 +130,34 @@
           .filter((part) => part.length >= 20)
       )
     );
+  }
+
+  function getRecentWindowLabel() {
+    return `최근 ${DEFAULTS.recentWindowDays}일`;
+  }
+
+  function getOlderThanWindowLabel() {
+    return `${DEFAULTS.recentWindowDays}일 초과`;
+  }
+
+  function extractCandidateTextsFromDocument(doc) {
+    const candidates = new Set();
+    const selectors = ['p', 'span', 'div', 'li'];
+    for (const selector of selectors) {
+      for (const node of Array.from(doc.querySelectorAll(selector))) {
+        const text = normalizeText(node.textContent || '');
+        if (text.length >= 20 && text.length <= 220) {
+          candidates.add(text);
+        }
+      }
+    }
+
+    const bodyText = normalizeText(doc?.body?.innerText || doc?.body?.textContent || '');
+    for (const block of extractNormalizedTextBlocks(bodyText)) {
+      candidates.add(block);
+    }
+
+    return Array.from(candidates);
   }
 
   function isTodoPage() {
@@ -290,7 +318,8 @@
       duplicateRows: 0,
     };
 
-    for (const node of nodes) {
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index];
       const text = normalizeText(node.innerText || node.textContent);
       if (!text || text.length > 500) {
         continue;
@@ -306,7 +335,8 @@
         stats.missingTimeText += 1;
         continue;
       }
-      if (!isRecentEnough(timeText)) {
+      const timeMeta = parseRelativeTimeText(timeText);
+      if (!timeMeta.eligible) {
         stats.tooOld += 1;
         continue;
       }
@@ -322,8 +352,17 @@
         text,
         timeText,
         href,
+        ageDays: timeMeta.ageDays,
+        sourceIndex: index,
       });
     }
+
+    results.sort((left, right) => {
+      if (left.ageDays !== right.ageDays) {
+        return left.ageDays - right.ageDays;
+      }
+      return left.sourceIndex - right.sourceIndex;
+    });
 
     return {
       items: results,
@@ -386,6 +425,9 @@
       'Mercari reply alert',
       `- 내용: ${item.text}`,
     ];
+    if (item.previewText) {
+      lines.push(`- 메시지본문: ${item.previewText}`);
+    }
     if (item.timeText) {
       lines.push(`- 시각표시: ${item.timeText}`);
     }
@@ -399,8 +441,8 @@
       `- 이유: ${meta.reason || 'scheduled'}`,
       `- 후보노드: ${scanStats.scannedNodes}`,
       `- 키워드일치: ${scanStats.keywordMatchedNodes}`,
-      `- 최근1개월대상: ${scanStats.itemCount}`,
-      `- 1개월초과제외: ${scanStats.tooOld}`,
+      `- ${getRecentWindowLabel()} 대상: ${scanStats.itemCount}`,
+      `- ${getOlderThanWindowLabel()} 제외: ${scanStats.tooOld}`,
       `- 중복행제외: ${scanStats.duplicateRows}`,
       `- 전송완료: ${sentStats.sent}`,
       `- 기존이력제외: ${sentStats.alreadySeen}`,
@@ -436,7 +478,7 @@
     if (planStats.templateCheckErrors) {
       lines.push(`- 거래화면확인실패: ${planStats.templateCheckErrors}건`);
     }
-    lines.push(`- 최근1개월대상: ${scanStats.itemCount}건`);
+    lines.push(`- ${getRecentWindowLabel()} 대상: ${scanStats.itemCount}건`);
     lines.push(`- 페이지: ${location.href}`);
     return lines.join('\n');
   }
@@ -496,8 +538,12 @@
           await sleep(DEFAULTS.iframeWaitMs);
           const doc = iframe.contentDocument;
           const bodyText = normalizeText(doc?.body?.innerText || doc?.body?.textContent || '');
+          const candidateTexts = doc ? extractCandidateTextsFromDocument(doc) : [];
           cleanup();
-          resolve(bodyText);
+          resolve({
+            bodyText,
+            candidateTexts,
+          });
         } catch (error) {
           cleanup();
           reject(error);
@@ -518,35 +564,79 @@
       return pageTextCache.get(href);
     }
 
-    const text = await openHiddenIframe(href);
-    pageTextCache.set(href, text);
-    return text;
+    const pageContent = await openHiddenIframe(href);
+    pageTextCache.set(href, pageContent);
+    return pageContent;
   }
 
-  async function getExcludedTemplateMatch(item) {
+  function shouldKeepPreviewCandidate(text, item) {
+    const normalized = normalizeText(text);
+    const compact = normalizeCompactText(text);
+    if (!normalized || normalized.length < 8) {
+      return false;
+    }
+    if (compact === normalizeCompactText(item.text || '')) {
+      return false;
+    }
+    if (compact === normalizeCompactText(item.timeText || '')) {
+      return false;
+    }
+    if (normalized.includes('返信をお願いします')) {
+      return false;
+    }
+    if (normalized.includes('取引メッセージがあります')) {
+      return false;
+    }
+    if (normalized.includes('事務局') || normalized.includes('メルカリ')) {
+      return false;
+    }
+    return true;
+  }
+
+  function pickPreviewText(item, candidateTexts) {
+    const filtered = candidateTexts
+      .map((text) => normalizeText(text))
+      .filter((text) => shouldKeepPreviewCandidate(text, item))
+      .sort((left, right) => right.length - left.length);
+
+    return filtered.length > 0 ? filtered[0].slice(0, 200) : '';
+  }
+
+  async function analyzeTransactionPage(item) {
     if (!item.href) {
-      return null;
+      return {
+        excludedMatch: null,
+        previewText: '',
+      };
     }
 
-    const pageText = await getTransactionPageText(item.href);
-    if (!pageText) {
-      return null;
+    const pageContent = await getTransactionPageText(item.href);
+    if (!pageContent) {
+      return {
+        excludedMatch: null,
+        previewText: '',
+      };
     }
-    const normalizedBlocks = extractNormalizedTextBlocks(pageText);
-    const compactBlocks = new Set(normalizedBlocks.map((block) => normalizeCompactText(block)));
+    const candidateTexts = Array.isArray(pageContent.candidateTexts) ? pageContent.candidateTexts : [];
+    const compactBlocks = new Set(candidateTexts.map((block) => normalizeCompactText(block)));
+    let excludedMatch = null;
 
     for (const rule of EXCLUDED_MESSAGE_RULES) {
       const normalizedTemplate = normalizeText(rule.text);
       const compactTemplate = normalizeCompactText(rule.text);
       if (compactTemplate && compactBlocks.has(compactTemplate)) {
-        return {
+        excludedMatch = {
           key: rule.key,
           matchedText: normalizedTemplate,
         };
+        break;
       }
     }
 
-    return null;
+    return {
+      excludedMatch,
+      previewText: pickPreviewText(item, candidateTexts),
+    };
   }
 
   async function maybeReloadOnBulkItems(items) {
@@ -701,9 +791,12 @@
           continue;
         }
 
-        let excludedMatch = null;
+        let analysis = {
+          excludedMatch: null,
+          previewText: '',
+        };
         try {
-          excludedMatch = await getExcludedTemplateMatch(item);
+          analysis = await analyzeTransactionPage(item);
         } catch (error) {
           templateCheckErrorCount += 1;
           debugLog('Template check failed, sending alert without exclusion', {
@@ -713,18 +806,24 @@
           });
         }
 
-        if (excludedMatch) {
+        if (analysis.excludedMatch) {
           seenHashes.add(hash);
           excludedByTemplateCount += 1;
           debugLog('Skipped template transaction message', {
             href: item.href,
             timeText: item.timeText,
-            templateKey: excludedMatch.key,
+            templateKey: analysis.excludedMatch.key,
           });
           continue;
         }
 
-        pendingItems.push({ item, hash });
+        pendingItems.push({
+          item: {
+            ...item,
+            previewText: analysis.previewText,
+          },
+          hash,
+        });
       }
 
       const shouldReloadAfterScan = await maybeReloadOnBulkItems(pendingItems.map((entry) => entry.item));
