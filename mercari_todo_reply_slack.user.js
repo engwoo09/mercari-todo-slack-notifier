@@ -140,7 +140,24 @@
     return `${DEFAULTS.recentWindowDays}일 초과`;
   }
 
+  function extractTransactionMessageBodies(doc) {
+    const messages = [];
+    const selector = '[data-testid="transaction:comment-list"] [data-testid="message-body"], [data-testid="message-body"]';
+    for (const node of Array.from(doc.querySelectorAll(selector))) {
+      const text = normalizeText(node.textContent || '');
+      if (text.length >= 2) {
+        messages.push(text);
+      }
+    }
+    return Array.from(new Set(messages));
+  }
+
   function extractCandidateTextsFromDocument(doc) {
+    const directMessages = extractTransactionMessageBodies(doc);
+    if (directMessages.length > 0) {
+      return directMessages;
+    }
+
     const candidates = new Set();
     const selectors = ['p', 'span', 'div', 'li'];
     for (const selector of selectors) {
