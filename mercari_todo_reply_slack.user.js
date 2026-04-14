@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.4
+// @version      0.4.5
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
