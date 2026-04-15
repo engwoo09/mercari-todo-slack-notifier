@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.6
+// @version      0.4.7
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    __UPDATE_URL__
 // @downloadURL  __DOWNLOAD_URL__
@@ -34,7 +34,6 @@
     foregroundResumeCooldownMs: 15 * 1000,
     periodicRefreshMs: 11 * 60 * 1000,
     maxLoadMoreClicks: 4,
-    maxItemsPerScan: 30,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 3,
     bulkReloadThreshold: 20,
@@ -491,8 +490,8 @@
     if (meta.shallowRetryInSeconds) {
       lines.push(`- 후속동작: 목록 재확인 ${meta.shallowRetryInSeconds}초 후`);
     }
-    if (meta.waitingForThreshold) {
-      lines.push(`- 후속동작: 필터통과 누적 ${DEFAULTS.bulkReloadThreshold}건 이상일 때까지 대기`);
+    if (meta.reloadThresholdActive) {
+      lines.push(`- 후속동작: 필터통과 누적 ${DEFAULTS.bulkReloadThreshold}건 이상이면 새로고침 판단`);
     }
     lines.push(`- 페이지: ${location.href}`);
     return lines.join('\n');
@@ -864,8 +863,8 @@
       }
 
       const shouldReloadAfterScan = await maybeReloadOnBulkItems(pendingItems.map((entry) => entry.item));
-      const itemsToSend = pendingItems.slice(0, DEFAULTS.maxItemsPerScan);
-      const shouldSendAlerts = pendingItems.length >= DEFAULTS.bulkReloadThreshold;
+      const itemsToSend = pendingItems;
+      const shouldSendAlerts = pendingItems.length > 0;
 
       if (shouldSendAlerts) {
         await sendSlackMessage(
@@ -905,7 +904,7 @@
             reason,
             nextScanInMinutes: shouldScheduleNext ? Math.round((DEFAULTS.scanIntervalMs / 60000) * 10) / 10 : 0,
             reloading: shouldReloadAfterScan,
-            waitingForThreshold: !shouldSendAlerts,
+            reloadThresholdActive: !shouldReloadAfterScan,
           }
         )
       );
