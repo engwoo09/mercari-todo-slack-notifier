@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.5
+// @version      0.4.6
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -40,6 +40,8 @@
     bulkReloadThreshold: 20,
     bulkReloadCooldownMs: 10 * 60 * 1000,
     iframeWaitMs: 2500,
+    iframeMessageWaitMs: 10000,
+    iframeMessagePollMs: 250,
   };
 
   const EXCLUDED_MESSAGE_RULES = [
@@ -175,6 +177,18 @@
     }
 
     return Array.from(candidates);
+  }
+
+  async function waitForTransactionMessages(doc) {
+    const deadline = getNow() + DEFAULTS.iframeMessageWaitMs;
+    while (getNow() < deadline) {
+      const messages = extractTransactionMessageBodies(doc);
+      if (messages.length > 0) {
+        return messages;
+      }
+      await sleep(DEFAULTS.iframeMessagePollMs);
+    }
+    return [];
   }
 
   function isTodoPage() {
@@ -554,8 +568,13 @@
         try {
           await sleep(DEFAULTS.iframeWaitMs);
           const doc = iframe.contentDocument;
-          const bodyText = normalizeText(doc?.body?.innerText || doc?.body?.textContent || '');
-          const candidateTexts = doc ? extractCandidateTextsFromDocument(doc) : [];
+          const waitedMessages = doc ? await waitForTransactionMessages(doc) : [];
+          const bodyText = waitedMessages.length > 0
+            ? normalizeText(waitedMessages.join('\n\n'))
+            : '';
+          const candidateTexts = waitedMessages.length > 0
+            ? waitedMessages
+            : [];
           cleanup();
           resolve({
             bodyText,
