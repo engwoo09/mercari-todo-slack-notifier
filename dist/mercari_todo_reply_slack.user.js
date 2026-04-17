@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.7
+// @version      0.4.8
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -468,18 +468,10 @@
   function formatScanCompletedMessage(scanStats, sentStats, meta = {}) {
     const lines = [
       'Mercari scan completed',
-      `- 이유: ${meta.reason || 'scheduled'}`,
-      `- 후보노드: ${scanStats.scannedNodes}`,
-      `- 키워드일치: ${scanStats.keywordMatchedNodes}`,
-      `- ${getRecentWindowLabel()} 대상: ${scanStats.itemCount}`,
-      `- ${getOlderThanWindowLabel()} 제외: ${scanStats.tooOld}`,
-      `- 중복행제외: ${scanStats.duplicateRows}`,
-      `- 전송완료: ${sentStats.sent}`,
-      `- 기존이력제외: ${sentStats.alreadySeen}`,
-      `- 템플릿제외: ${sentStats.excludedByTemplate}`,
+      `- 상태: 완료`,
     ];
-    if (sentStats.templateCheckErrors) {
-      lines.push(`- 거래화면확인실패: ${sentStats.templateCheckErrors}`);
+    if (sentStats.sent > 0) {
+      lines.push(`- 알림전송: ${sentStats.sent}건`);
     }
     if (meta.nextScanInMinutes) {
       lines.push(`- 다음스캔: 약 ${meta.nextScanInMinutes}분 후`);
