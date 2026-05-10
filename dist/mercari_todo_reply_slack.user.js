@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mercari Todo Reply Slack Notifier
 // @namespace    https://mercari.local/
-// @version      0.4.8
+// @version      0.5.0
 // @description  Send Slack alerts when Mercari todo items include "返信をお願いします".
 // @updateURL    https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
 // @downloadURL  https://raw.githubusercontent.com/engwoo09/mercari-todo-slack-notifier/main/dist/mercari_todo_reply_slack.user.js
@@ -21,6 +21,9 @@
     webhookUrl: 'slackWebhookUrl',
     keyword: 'keyword',
     seenHashes: 'seenHashes',
+    pendingAlertQueue: 'pendingAlertQueue',
+    priorityTransactionIds: 'priorityTransactionIds',
+    prioritySeenMessages: 'prioritySeenMessages',
     debug: 'debug',
     baselineInitialized: 'baselineInitialized',
     bulkAlertLastSentAt: 'bulkAlertLastSentAt',
@@ -36,6 +39,7 @@
     maxLoadMoreClicks: 4,
     waitAfterLoadMoreMs: 1200,
     recentWindowDays: 3,
+    generalAlertBatchThreshold: 10,
     bulkReloadThreshold: 20,
     bulkReloadCooldownMs: 10 * 60 * 1000,
     iframeWaitMs: 2500,
@@ -92,6 +96,57 @@
 
   function saveSeenHashes(seenHashes) {
     setConfig(CONFIG_KEYS.seenHashes, Array.from(seenHashes));
+  }
+
+  function getPendingAlertQueue() {
+    const value = getConfig(CONFIG_KEYS.pendingAlertQueue, []);
+    return Array.isArray(value) ? value : [];
+  }
+
+  function savePendingAlertQueue(queue) {
+    setConfig(CONFIG_KEYS.pendingAlertQueue, Array.isArray(queue) ? queue : []);
+  }
+
+  function normalizeTransactionId(value) {
+    const normalized = String(value || '').trim();
+    return /^m\d+$/.test(normalized) ? normalized : '';
+  }
+
+  function extractTransactionIdFromHref(href) {
+    const canonical = canonicalizeHref(href);
+    const match = canonical.match(/\/transaction\/(m\d+)/);
+    return match ? match[1] : '';
+  }
+
+  function getPriorityTransactionIds() {
+    const value = getConfig(CONFIG_KEYS.priorityTransactionIds, []);
+    const ids = Array.isArray(value) ? value : [];
+    return Array.from(new Set(ids.map((id) => normalizeTransactionId(id)).filter(Boolean)));
+  }
+
+  function savePriorityTransactionIds(ids) {
+    const normalizedIds = Array.from(new Set((Array.isArray(ids) ? ids : [])
+      .map((id) => normalizeTransactionId(id))
+      .filter(Boolean)));
+    setConfig(CONFIG_KEYS.priorityTransactionIds, normalizedIds);
+  }
+
+  function getPrioritySeenMessages() {
+    const value = getConfig(CONFIG_KEYS.prioritySeenMessages, {});
+    return value && typeof value === 'object' ? value : {};
+  }
+
+  function savePrioritySeenMessages(value) {
+    setConfig(CONFIG_KEYS.prioritySeenMessages, value && typeof value === 'object' ? value : {});
+  }
+
+  function parsePriorityTransactionIdsInput(value) {
+    return Array.from(new Set(
+      String(value || '')
+        .split(/[\s,]+/)
+        .map((token) => normalizeTransactionId(token))
+        .filter(Boolean)
+    ));
   }
 
   function debugEnabled() {
@@ -465,6 +520,22 @@
     return lines.join('\n');
   }
 
+  function formatPrioritySlackMessage(item) {
+    const transactionId = extractTransactionIdFromHref(item.href);
+    const lines = [
+      'Mercari priority transaction alert',
+      '- 상태: 우선감시 거래 새 메시지 감지',
+    ];
+    if (transactionId) {
+      lines.push(`- 거래ID: ${transactionId}`);
+    }
+    if (item.previewText) {
+      lines.push(`- 메시지본문: ${item.previewText}`);
+    }
+    lines.push(`- 링크: ${item.href}`);
+    return lines.join('\n');
+  }
+
   function formatScanCompletedMessage(scanStats, sentStats, meta = {}) {
     const lines = [
       'Mercari scan completed',
@@ -503,6 +574,15 @@
     lines.push(`- ${getRecentWindowLabel()} 대상: ${scanStats.itemCount}건`);
     lines.push(`- 페이지: ${location.href}`);
     return lines.join('\n');
+  }
+
+  function formatQueuedNotificationsMessage(queueCount) {
+    return [
+      'Mercari reply alert batch',
+      `- 상태: 일반 알림 ${queueCount}건 누적되어 전송합니다.`,
+      `- 기준: 누적 ${DEFAULTS.generalAlertBatchThreshold}건 이상일 때 전송`,
+      `- 페이지: ${location.href}`,
+    ].join('\n');
   }
 
   function shouldRetryShallowScan(scanStats) {
@@ -667,6 +747,67 @@
     };
   }
 
+  async function scanPriorityTransactions() {
+    const priorityIds = getPriorityTransactionIds();
+    if (priorityIds.length === 0) {
+      return 0;
+    }
+
+    const seenMessages = getPrioritySeenMessages();
+    let sentCount = 0;
+
+    for (const transactionId of priorityIds) {
+      const href = `${location.origin}/transaction/${transactionId}`;
+      const analysis = await analyzeTransactionPage({ href, text: '', timeText: '' });
+      const latestText = normalizeText(analysis.previewText || '');
+      if (!latestText) {
+        continue;
+      }
+
+      const latestHash = simpleHash(`${transactionId}||${latestText}`);
+      if (seenMessages[transactionId] === latestHash) {
+        continue;
+      }
+
+      await sendSlackMessage(
+        formatPrioritySlackMessage({
+          href,
+          previewText: latestText,
+        })
+      );
+      seenMessages[transactionId] = latestHash;
+      sentCount += 1;
+    }
+
+    savePrioritySeenMessages(seenMessages);
+    return sentCount;
+  }
+
+  function mergePendingAlertQueue(existingQueue, newEntries) {
+    const merged = new Map();
+
+    for (const entry of existingQueue) {
+      if (entry && entry.hash) {
+        merged.set(entry.hash, entry);
+      }
+    }
+
+    for (const entry of newEntries) {
+      if (entry && entry.hash) {
+        merged.set(entry.hash, entry);
+      }
+    }
+
+    return Array.from(merged.values()).sort((left, right) => {
+      const leftAge = Number(left?.item?.ageDays ?? Number.POSITIVE_INFINITY);
+      const rightAge = Number(right?.item?.ageDays ?? Number.POSITIVE_INFINITY);
+      if (leftAge !== rightAge) {
+        return leftAge - rightAge;
+      }
+      return Number(left?.item?.sourceIndex ?? 0) - Number(right?.item?.sourceIndex ?? 0);
+    });
+  }
+
   async function maybeReloadOnBulkItems(items) {
     if (items.length < DEFAULTS.bulkReloadThreshold) {
       return false;
@@ -740,9 +881,12 @@
     isScanning = true;
     lastScanStartedAt = getNow();
     try {
+      const priorityAlertCount = await scanPriorityTransactions();
       const loadMoreClicks = await clickLoadMore();
       const { items, stats } = collectMatchingItems();
       const seenHashes = getSeenHashes();
+      const priorityIds = new Set(getPriorityTransactionIds());
+      const queuedEntries = getPendingAlertQueue();
       let newCount = 0;
       let alreadySeenCount = 0;
       let excludedByTemplateCount = 0;
@@ -814,6 +958,10 @@
 
       for (const item of items) {
         const hash = buildItemHash(item);
+        const transactionId = extractTransactionIdFromHref(item.href);
+        if (transactionId && priorityIds.has(transactionId)) {
+          continue;
+        }
         if (seenHashes.has(hash)) {
           alreadySeenCount += 1;
           continue;
@@ -855,19 +1003,12 @@
       }
 
       const shouldReloadAfterScan = await maybeReloadOnBulkItems(pendingItems.map((entry) => entry.item));
-      const itemsToSend = pendingItems;
-      const shouldSendAlerts = pendingItems.length > 0;
+      const mergedQueue = mergePendingAlertQueue(queuedEntries, pendingItems);
+      const itemsToSend = mergedQueue;
+      const shouldSendAlerts = mergedQueue.length >= DEFAULTS.generalAlertBatchThreshold;
 
       if (shouldSendAlerts) {
-        await sendSlackMessage(
-          formatPlannedNotificationsMessage(scanStats, {
-            pending: pendingItems.length,
-            toSend: itemsToSend.length,
-            alreadySeen: alreadySeenCount,
-            excludedByTemplate: excludedByTemplateCount,
-            templateCheckErrors: templateCheckErrorCount,
-          })
-        );
+        await sendSlackMessage(formatQueuedNotificationsMessage(itemsToSend.length));
       }
 
       if (shouldSendAlerts) {
@@ -876,11 +1017,14 @@
           seenHashes.add(pendingItem.hash);
           newCount += 1;
         }
+        savePendingAlertQueue([]);
+      } else {
+        savePendingAlertQueue(mergedQueue);
       }
 
       saveSeenHashes(seenHashes);
       const sentStats = {
-        sent: newCount,
+        sent: newCount + priorityAlertCount,
         alreadySeen: alreadySeenCount,
         excludedByTemplate: excludedByTemplateCount,
         templateCheckErrors: templateCheckErrorCount,
@@ -933,6 +1077,16 @@
       }
     });
 
+    GM_registerMenuCommand('Set Priority Transaction IDs', () => {
+      const current = getPriorityTransactionIds().join(', ');
+      const next = window.prompt('우선 감시할 거래 ID를 쉼표 또는 공백으로 구분해 입력하세요', current);
+      if (next !== null) {
+        const ids = parsePriorityTransactionIdsInput(next);
+        savePriorityTransactionIds(ids);
+        window.alert(`우선 감시 거래 ID ${ids.length}건 저장 완료`);
+      }
+    });
+
     GM_registerMenuCommand('Send Slack Test Message', async () => {
       try {
         if (!getWebhookUrl()) {
@@ -954,6 +1108,8 @@
 
     GM_registerMenuCommand('Reset Sent History', () => {
       setConfig(CONFIG_KEYS.seenHashes, []);
+      setConfig(CONFIG_KEYS.pendingAlertQueue, []);
+      setConfig(CONFIG_KEYS.prioritySeenMessages, {});
       setConfig(CONFIG_KEYS.baselineInitialized, false);
       setConfig(CONFIG_KEYS.bulkAlertLastSentAt, 0);
       window.alert('전송 이력 초기화 완료');
@@ -961,6 +1117,7 @@
 
     GM_registerMenuCommand('Clear Seen Hashes Keep Baseline', () => {
       setConfig(CONFIG_KEYS.seenHashes, []);
+      setConfig(CONFIG_KEYS.pendingAlertQueue, []);
       window.alert('기준선은 유지하고 전송 이력만 비웠습니다. 현재 목록도 다시 검사 대상이 됩니다.');
     });
 
